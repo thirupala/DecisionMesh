@@ -1,0 +1,684 @@
+openapi: 3.0.3
+info:
+  title: DecisionMesh API
+  description: |
+    ## Overview
+    DecisionMesh is a decision-centric control plane for orchestrating
+    and governing enterprise AI decisions across providers.
+    
+    ## Key Concepts
+    - **Decision Intent**: What you want to accomplish (the actual prompt/input)
+    - **Constraints**: Requirements for cost, latency, quality, compliance
+    - **Context**: Environment and metadata for routing decisions
+    - **Policies**: Runtime rules that govern decision execution
+    
+    ## Authentication
+    All requests require either Bearer token (JWT) or API key authentication.
+    See the security section below for details.
+    
+    ## Rate Limits
+    - Standard tier: 100 requests/minute
+    - Premium tier: 1,000 requests/minute
+    - Enterprise tier: Custom limits
+    
+    Rate limit information is returned in response headers:
+    - `X-RateLimit-Limit`: Total requests allowed per window
+    - `X-RateLimit-Remaining`: Requests remaining in current window
+    - `X-RateLimit-Reset`: UTC epoch seconds when limit resets
+    
+    ## Error Handling
+    All errors include:
+    - Machine-readable error code (e.g., `DM_POLICY_001`)
+    - Human-readable failure reason
+    - Suggested actions for resolution
+    
+    ## Idempotency
+    All decision requests are idempotent using `decision_id` as the key.
+    Duplicate requests return cached results for 24 hours.
+    
+  version: 0.2.0
+  contact:
+    name: DecisionMesh API Support
+    email: api-support@decimeshi.com
+    url: https://docs.decimeshi.com
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://api.decimeshi.com/v1
+    description: Production
+  - url: https://api-staging.decimeshi.com/v1
+    description: Staging
+  - url: http://localhost:8000/v1
+    description: Local development
+
+security:
+  - BearerAuth: []
+  - ApiKeyAuth: []
+
+paths:
+  /decisions:
+    post:
+      summary: Submit a decision for orchestration
+      description: |
+        Submit a decision intent to DecisionMesh. The platform evaluates
+        policy, orchestrates execution across AI providers, and returns 
+        either a successful outcome or a structured failure.
+        
+        Requests are idempotent based on `decision_id`. Submitting the same
+        ID within 24 hours returns the cached result.
+      operationId: createDecision
+      tags:
+        - Decisions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DecisionRequest"
+            examples:
+              basic-text-generation:
+                summary: Basic text generation with cost constraint
+                value:
+                  decision_id: "550e8400-e29b-41d4-a716-446655440000"
+                  decision_type: "text_generation"
+                  intent:
+                    prompt: "Explain quantum computing to a 10-year-old"
+                  constraints:
+                    max_cost_usd: 0.01
+                    max_latency_ms: 3000
+                  context:
+                    tenant_id: "acme_corp"
+                    channel: "web"
+                    region: "us"
+              
+              compliance-constrained:
+                summary: EU region with GDPR compliance
+                value:
+                  decision_id: "550e8400-e29b-41d4-a716-446655440001"
+                  decision_type: "text_classification"
+                  intent:
+                    prompt: "Classify customer sentiment: 'The product arrived broken'"
+                  constraints:
+                    compliance: ["gdpr_compliant", "data_residency_eu"]
+                    max_latency_ms: 1000
+                  context:
+                    tenant_id: "eu_customer"
+                    region: "eu"
+              
+              quality-focused:
+                summary: High-quality generation with preferred providers
+                value:
+                  decision_id: "550e8400-e29b-41d4-a716-446655440002"
+                  decision_type: "code_generation"
+                  intent:
+                    prompt: "Write a Python function to calculate Fibonacci numbers"
+                    system_prompt: "You are an expert Python developer. Write clean, efficient code."
+                  constraints:
+                    min_quality_score: 0.85
+                    preferred_providers: ["anthropic", "openai"]
+                    max_cost_usd: 0.05
+                  context:
+                    tenant_id: "dev_team"
+                    channel: "api"
+                    user_tier: "premium"
+                    
+      responses:
+        "200":
+          description: Decision completed successfully
+          headers:
+            X-RateLimit-Limit:
+              schema:
+                type: integer
+              description: Request limit per window
+            X-RateLimit-Remaining:
+              schema:
+                type: integer
+              description: Requests remaining
+            X-RateLimit-Reset:
+              schema:
+                type: integer
+              description: UTC epoch seconds when limit resets
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DecisionSuccessResponse"
+        "400":
+          description: Validation failure
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DecisionFailureResponse"
+              example:
+                decision_id: "550e8400-e29b-41d4-a716-446655440000"
+                status: "failure"
+                failure_reason: "validation_failure"
+                failure_code: "DM_VAL_001"
+                details: "intent.prompt is required and cannot be empty"
+                suggested_action: "check_request"
+        "403":
+          description: Policy denied
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DecisionFailureResponse"
+              example:
+                decision_id: "550e8400-e29b-41d4-a716-446655440001"
+                status: "failure"
+                failure_reason: "policy_denied"
+                failure_code: "DM_POLICY_001"
+                details: "Data residency policy requires EU region for this tenant"
+                suggested_action: "check_policy"
+        "429":
+          description: Rate limit exceeded
+          headers:
+            X-RateLimit-Reset:
+              schema:
+                type: integer
+              description: UTC epoch seconds when limit resets
+            Retry-After:
+              schema:
+                type: integer
+              description: Seconds until retry is allowed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DecisionFailureResponse"
+              example:
+                decision_id: "550e8400-e29b-41d4-a716-446655440002"
+                status: "failure"
+                failure_reason: "rate_limit_exceeded"
+                failure_code: "DM_RATE_001"
+                details: "Request rate limit exceeded for tenant"
+                retry_after_seconds: 42
+                suggested_action: "retry_later"
+        "500":
+          description: Execution failure
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DecisionFailureResponse"
+
+  /health:
+    get:
+      summary: System health check
+      description: Returns overall system health status and component availability
+      operationId: getHealth
+      tags:
+        - System
+      security: []  # Health check is public
+      responses:
+        "200":
+          description: System health status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [healthy, degraded, unhealthy]
+                  timestamp:
+                    type: string
+                    format: date-time
+                  components:
+                    type: object
+                    properties:
+                      database:
+                        type: string
+                        enum: [healthy, degraded, unhealthy]
+                      policy_engine:
+                        type: string
+                        enum: [healthy, degraded, unhealthy]
+                      provider_adapters:
+                        type: object
+                        additionalProperties:
+                          type: string
+                          enum: [healthy, degraded, unhealthy]
+                example:
+                  status: "healthy"
+                  timestamp: "2026-01-27T10:30:00Z"
+                  components:
+                    database: "healthy"
+                    policy_engine: "healthy"
+                    provider_adapters:
+                      openai: "healthy"
+                      anthropic: "healthy"
+                      google: "degraded"
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT token for user authentication
+      
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key for service-to-service authentication
+
+  schemas:
+    DecisionRequest:
+      type: object
+      required:
+        - decision_id
+        - decision_type
+        - intent
+        - constraints
+        - context
+      properties:
+        decision_id:
+          type: string
+          format: uuid
+          description: Client-supplied idempotency key (UUID v4 recommended)
+          example: "550e8400-e29b-41d4-a716-446655440000"
+          
+        decision_type:
+          type: string
+          enum:
+            - text_generation
+            - text_classification
+            - embedding_generation
+            - image_generation
+            - code_generation
+          description: Type of AI decision to orchestrate
+          example: "text_generation"
+          
+        intent:
+          type: object
+          required:
+            - prompt
+          properties:
+            prompt:
+              type: string
+              minLength: 1
+              maxLength: 100000
+              description: The input prompt or query
+              example: "Explain the benefits of cloud computing"
+              
+            system_prompt:
+              type: string
+              maxLength: 50000
+              description: Optional system instructions or role definition
+              example: "You are a helpful technical advisor"
+              
+            examples:
+              type: array
+              maxItems: 10
+              items:
+                type: object
+                required:
+                  - input
+                  - output
+                properties:
+                  input:
+                    type: string
+                  output:
+                    type: string
+              description: Few-shot examples for classification or structured tasks
+              
+        constraints:
+          $ref: "#/components/schemas/DecisionConstraints"
+          
+        context:
+          $ref: "#/components/schemas/DecisionContext"
+
+    DecisionConstraints:
+      type: object
+      properties:
+        max_latency_ms:
+          type: integer
+          minimum: 100
+          maximum: 300000
+          example: 2000
+          description: Maximum acceptable latency (100ms to 5 minutes)
+          
+        max_cost_usd:
+          type: number
+          format: float
+          minimum: 0.0001
+          maximum: 100.0
+          example: 0.02
+          description: Maximum cost per decision in USD
+          
+        min_quality_score:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 1.0
+          example: 0.75
+          description: Minimum acceptable quality/confidence threshold (0.0-1.0)
+          
+        preferred_providers:
+          type: array
+          items:
+            type: string
+            enum: [openai, anthropic, google, azure, aws, cohere]
+          maxItems: 5
+          description: Preferred providers (soft preference, not enforced)
+          example: ["anthropic", "openai"]
+          
+        excluded_providers:
+          type: array
+          items:
+            type: string
+          maxItems: 5
+          description: Providers to never use for this decision
+          example: ["provider_x"]
+          
+        compliance:
+          type: array
+          items:
+            type: string
+            enum:
+              - no_pii
+              - gdpr_compliant
+              - hipaa_compliant
+              - soc2_compliant
+              - data_residency_eu
+              - data_residency_us
+              - data_residency_apac
+          description: Compliance requirements that must be satisfied
+          example: ["no_pii", "gdpr_compliant"]
+          
+        retry_policy:
+          type: object
+          properties:
+            max_retries:
+              type: integer
+              minimum: 0
+              maximum: 5
+              default: 2
+              description: Maximum retry attempts on transient failures
+            backoff_multiplier:
+              type: number
+              format: float
+              minimum: 1.0
+              maximum: 5.0
+              default: 2.0
+              description: Exponential backoff multiplier between retries
+
+    DecisionContext:
+      type: object
+      required:
+        - tenant_id
+      properties:
+        tenant_id:
+          type: string
+          pattern: "^[a-zA-Z0-9_-]+$"
+          minLength: 1
+          maxLength: 64
+          description: Tenant identifier for multi-tenancy isolation
+          example: "acme_corp"
+          
+        channel:
+          type: string
+          enum: [api, support, web, mobile, batch]
+          example: "support"
+          description: Channel through which decision was requested
+          
+        language:
+          type: string
+          pattern: "^[a-z]{2}(-[A-Z]{2})?$"
+          example: "en-US"
+          description: Language code (ISO 639-1 with optional region)
+          
+        region:
+          type: string
+          enum: [us, eu, apac, global]
+          example: "eu"
+          description: Geographic region for routing and compliance
+          
+        user_tier:
+          type: string
+          enum: [free, standard, premium, enterprise]
+          default: "standard"
+          description: User tier for differentiated service levels
+          
+        correlation_id:
+          type: string
+          format: uuid
+          description: Trace ID for distributed tracing (optional)
+          example: "7f3e5c90-1234-5678-9abc-def012345678"
+          
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Custom metadata (max 10KB serialized)
+          example:
+            customer_id: "cust_12345"
+            session_id: "sess_67890"
+
+    DecisionSuccessResponse:
+      type: object
+      required:
+        - decision_id
+        - status
+        - result
+        - metadata
+      properties:
+        decision_id:
+          type: string
+          format: uuid
+          description: The decision identifier from the request
+          
+        status:
+          type: string
+          enum: [success]
+          
+        result:
+          $ref: "#/components/schemas/DecisionResult"
+          
+        metadata:
+          $ref: "#/components/schemas/DecisionMetadata"
+          
+        warnings:
+          type: array
+          items:
+            type: object
+            properties:
+              code:
+                type: string
+                enum:
+                  - cost_exceeded_preferred
+                  - fallback_used
+                  - quality_below_target
+                  - latency_exceeded_target
+              message:
+                type: string
+          description: Non-fatal warnings about decision execution
+          example:
+            - code: "fallback_used"
+              message: "Primary provider unavailable, used fallback"
+
+    DecisionFailureResponse:
+      type: object
+      required:
+        - decision_id
+        - status
+        - failure_reason
+        - failure_code
+      properties:
+        decision_id:
+          type: string
+          format: uuid
+          
+        status:
+          type: string
+          enum: [failure]
+          
+        failure_reason:
+          type: string
+          enum:
+            - validation_failure
+            - policy_denied
+            - no_viable_plan
+            - provider_failure
+            - quality_failure
+            - timeout
+            - constraint_exceeded
+            - rate_limit_exceeded
+            - budget_exceeded
+            - provider_unavailable
+          description: High-level category of failure
+          
+        failure_code:
+          type: string
+          pattern: "^DM_[A-Z]+_\\d{3}$"
+          example: "DM_POLICY_001"
+          description: Machine-readable error code for programmatic handling
+          
+        details:
+          type: string
+          example: "No provider satisfied max_cost_usd constraint of 0.01"
+          description: Human-readable explanation of the failure
+          
+        retry_after_seconds:
+          type: integer
+          minimum: 0
+          description: Seconds before retry is allowed (for rate limiting)
+          
+        suggested_action:
+          type: string
+          enum:
+            - increase_budget
+            - relax_constraints
+            - retry_later
+            - contact_support
+            - check_policy
+            - check_request
+          description: Recommended action to resolve the failure
+
+    DecisionResult:
+      type: object
+      required:
+        - content
+      properties:
+        content:
+          type: string
+          description: The generated content or response from the AI model
+          example: "Cloud computing offers scalability, cost-efficiency..."
+          
+        confidence:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 1.0
+          example: 0.82
+          description: Model's confidence score (if available, 0.0-1.0)
+          
+        provider_metadata:
+          type: object
+          properties:
+            model_name:
+              type: string
+              example: "claude-3-5-sonnet-20241022"
+              description: Specific model version used
+            provider:
+              type: string
+              example: "anthropic"
+              description: Provider that fulfilled the decision
+            finish_reason:
+              type: string
+              enum: [complete, length, content_filter, error]
+              description: How the model completed generation
+          description: Provider-specific metadata
+          
+        alternatives:
+          type: array
+          maxItems: 3
+          items:
+            type: object
+            properties:
+              content:
+                type: string
+              confidence:
+                type: number
+                format: float
+          description: Alternative outputs (if multi-candidate generation was requested)
+
+    DecisionMetadata:
+      type: object
+      required:
+        - latency_ms
+        - cost_usd
+        - provider_used
+        - timestamp
+      properties:
+        latency_ms:
+          type: integer
+          minimum: 0
+          example: 1340
+          description: Total decision latency from request to response
+          
+        cost_usd:
+          type: number
+          format: float
+          minimum: 0.0
+          example: 0.014
+          description: Total cost of this decision in USD
+          
+        provider_used:
+          type: string
+          example: "anthropic"
+          description: Provider that fulfilled the decision
+          
+        model_used:
+          type: string
+          example: "claude-3-5-sonnet-20241022"
+          description: Specific model version used
+          
+        timestamp:
+          type: string
+          format: date-time
+          description: Decision completion timestamp (ISO 8601)
+          example: "2026-01-27T10:30:45Z"
+          
+        tokens:
+          type: object
+          properties:
+            input_tokens:
+              type: integer
+              example: 150
+            output_tokens:
+              type: integer
+              example: 320
+            total_tokens:
+              type: integer
+              example: 470
+          description: Token usage breakdown
+          
+        policy_evaluations:
+          type: array
+          items:
+            type: string
+          example: ["cost_limit_policy", "eu_data_residency"]
+          description: List of policies that were evaluated
+          
+        execution_path:
+          type: object
+          properties:
+            attempted_providers:
+              type: array
+              items:
+                type: string
+              example: ["anthropic", "openai"]
+              description: Providers attempted in order
+            fallback_count:
+              type: integer
+              example: 1
+              description: Number of fallback attempts
+            final_strategy:
+              type: string
+              enum: [primary, fallback, emergency]
+              description: Which routing strategy succeeded
+          description: Details about execution routing and fallbacks
+
+tags:
+  - name: Decisions
+    description: Core decision orchestration endpoints
+  - name: System
+    description: System health and status endpoints

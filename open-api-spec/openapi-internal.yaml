@@ -1,0 +1,1227 @@
+openapi: 3.0.3
+info:
+  title: DecisionMesh Internal Control Plane API
+  description: |
+    ## Overview
+    Internal APIs for DecisionMesh control-plane operations.
+    Not intended for public or customer use.
+    
+    ## Purpose
+    These endpoints provide:
+    - Decision record retrieval and analysis
+    - Policy management and simulation
+    - Provider configuration and health monitoring
+    - Cost tracking and budget management
+    - Analytics and reporting
+    - System administration
+    
+    ## Authentication
+    Internal endpoints require elevated privileges and use service-to-service
+    authentication with mTLS or internal API keys.
+    
+    ## Access Control
+    - Admin endpoints: Full system access
+    - Operator endpoints: Read-only monitoring
+    - Analytics endpoints: Data analysis access
+    
+  version: 0.2.0-internal
+  contact:
+    name: DecisionMesh Platform Team
+    email: platform-team@decimeshi.com
+
+servers:
+  - url: http://localhost:8000/internal
+    description: Internal access only (not exposed publicly)
+
+security:
+  - InternalApiKey: []
+
+paths:
+  # ==================== DECISION MANAGEMENT ====================
+  
+  /decisions/{decision_id}:
+    get:
+      summary: Retrieve full decision record
+      description: Get complete decision record including all metadata, execution details, and outcomes
+      operationId: getDecision
+      tags:
+        - Decisions
+      parameters:
+        - name: decision_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Decision identifier
+      responses:
+        "200":
+          description: Full decision record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DecisionRecord"
+        "404":
+          description: Decision not found
+
+  /decisions/{decision_id}/trace:
+    get:
+      summary: Retrieve execution and policy trace
+      description: Get detailed execution trace showing policy evaluations and provider attempts
+      operationId: getDecisionTrace
+      tags:
+        - Decisions
+      parameters:
+        - name: decision_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Decision execution trace
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DecisionTrace"
+
+  /decisions/{decision_id}/export:
+    get:
+      summary: Export decision record for compliance
+      description: Export complete decision record in compliance-ready format
+      operationId: exportDecision
+      tags:
+        - Decisions
+      parameters:
+        - name: decision_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: format
+          in: query
+          schema:
+            type: string
+            enum: [json, csv]
+            default: json
+      responses:
+        "200":
+          description: Exported decision record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DecisionRecord"
+            text/csv:
+              schema:
+                type: string
+
+  /decisions/bulk:
+    post:
+      summary: Retrieve multiple decision records
+      description: Efficient batch retrieval for analytics (max 100 decisions per request)
+      operationId: getBulkDecisions
+      tags:
+        - Decisions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - decision_ids
+              properties:
+                decision_ids:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+                  minItems: 1
+                  maxItems: 100
+      responses:
+        "200":
+          description: Bulk decision records
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  decisions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/DecisionRecord"
+                  not_found:
+                    type: array
+                    items:
+                      type: string
+                      format: uuid
+
+  /decisions/search:
+    post:
+      summary: Advanced decision search
+      description: Search decisions with filters, sorting, and pagination
+      operationId: searchDecisions
+      tags:
+        - Decisions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                filters:
+                  type: object
+                  properties:
+                    tenant_id:
+                      type: string
+                    decision_type:
+                      type: string
+                    status:
+                      type: string
+                      enum: [success, failure]
+                    date_range:
+                      type: object
+                      properties:
+                        start:
+                          type: string
+                          format: date-time
+                        end:
+                          type: string
+                          format: date-time
+                    provider_used:
+                      type: string
+                    cost_range:
+                      type: object
+                      properties:
+                        min:
+                          type: number
+                        max:
+                          type: number
+                sort_by:
+                  type: string
+                  enum: [created_at, cost_usd, latency_ms]
+                  default: created_at
+                sort_order:
+                  type: string
+                  enum: [asc, desc]
+                  default: desc
+                limit:
+                  type: integer
+                  minimum: 1
+                  maximum: 100
+                  default: 20
+                offset:
+                  type: integer
+                  minimum: 0
+                  default: 0
+      responses:
+        "200":
+          description: Search results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/DecisionRecord"
+                  total:
+                    type: integer
+                  limit:
+                    type: integer
+                  offset:
+                    type: integer
+
+  /decisions/purge:
+    post:
+      summary: Purge decisions older than retention period
+      description: Admin-only bulk purge operation for data retention compliance
+      operationId: purgeDecisions
+      tags:
+        - Decisions
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - older_than_days
+              properties:
+                older_than_days:
+                  type: integer
+                  minimum: 30
+                  description: Purge decisions older than this many days
+                tenant_id:
+                  type: string
+                  description: Optional tenant filter
+                dry_run:
+                  type: boolean
+                  default: true
+                  description: If true, return count without deleting
+      responses:
+        "200":
+          description: Purge results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  purged_count:
+                    type: integer
+                  dry_run:
+                    type: boolean
+
+  # ==================== POLICY MANAGEMENT ====================
+  
+  /policies:
+    get:
+      summary: List active policies
+      description: Retrieve all active policies or filter by scope
+      operationId: listPolicies
+      tags:
+        - Policies
+      parameters:
+        - name: tenant_id
+          in: query
+          schema:
+            type: string
+        - name: active_only
+          in: query
+          schema:
+            type: boolean
+            default: true
+      responses:
+        "200":
+          description: Active policies
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policies:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Policy"
+                  total:
+                    type: integer
+
+    post:
+      summary: Create a new policy
+      description: Create and activate a new governance policy (admin only)
+      operationId: createPolicy
+      tags:
+        - Policies
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Policy"
+      responses:
+        "201":
+          description: Policy created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Policy"
+        "400":
+          description: Validation error
+
+  /policies/{policy_id}:
+    get:
+      summary: Get policy details
+      operationId: getPolicy
+      tags:
+        - Policies
+      parameters:
+        - name: policy_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Policy details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Policy"
+
+    patch:
+      summary: Update policy
+      description: Update policy (creates new version)
+      operationId: updatePolicy
+      tags:
+        - Policies
+      parameters:
+        - name: policy_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Policy"
+      responses:
+        "200":
+          description: Policy updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Policy"
+
+    delete:
+      summary: Deactivate policy
+      description: Soft delete (sets active=false)
+      operationId: deactivatePolicy
+      tags:
+        - Policies
+      parameters:
+        - name: policy_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Policy deactivated
+
+  /policies/evaluate:
+    post:
+      summary: Simulate policy evaluation
+      description: |
+        Evaluate policies against a hypothetical decision without execution.
+        Useful for testing policy changes before deployment.
+      operationId: evaluatePolicy
+      tags:
+        - Policies
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - decision_request
+              properties:
+                decision_request:
+                  type: object
+                  description: Simulated decision request
+                policy_ids:
+                  type: array
+                  items:
+                    type: string
+                  description: Specific policies to test (optional)
+      responses:
+        "200":
+          description: Policy evaluation result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyEvaluationResult"
+
+  # ==================== PROVIDER MANAGEMENT ====================
+  
+  /providers/status:
+    get:
+      summary: Provider health and availability
+      description: Get current status of all configured providers
+      operationId: getProviderStatus
+      tags:
+        - Providers
+      responses:
+        "200":
+          description: Provider status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  providers:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ProviderStatus"
+                  last_updated:
+                    type: string
+                    format: date-time
+
+  /providers:
+    get:
+      summary: List all configured providers
+      description: Get configuration for all providers
+      operationId: listProviders
+      tags:
+        - Providers
+      responses:
+        "200":
+          description: Provider configurations
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ProviderConfig"
+
+  /providers/{provider_id}:
+    get:
+      summary: Get provider configuration
+      operationId: getProvider
+      tags:
+        - Providers
+      parameters:
+        - name: provider_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Provider configuration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderConfig"
+
+    patch:
+      summary: Update provider configuration
+      description: Update provider settings (credentials, rate limits, etc.)
+      operationId: updateProvider
+      tags:
+        - Providers
+      parameters:
+        - name: provider_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProviderConfigUpdate"
+      responses:
+        "200":
+          description: Provider updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderConfig"
+
+  /providers/{provider_id}/disable:
+    post:
+      summary: Temporarily disable a provider
+      description: Prevent routing to this provider (existing requests continue)
+      operationId: disableProvider
+      tags:
+        - Providers
+      parameters:
+        - name: provider_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Provider disabled
+
+  /providers/{provider_id}/enable:
+    post:
+      summary: Re-enable a provider
+      description: Allow routing to this provider again
+      operationId: enableProvider
+      tags:
+        - Providers
+      parameters:
+        - name: provider_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Provider enabled
+
+  /providers/{provider_id}/circuit-breaker:
+    get:
+      summary: Get circuit breaker state
+      description: Check current circuit breaker status for provider
+      operationId: getCircuitBreaker
+      tags:
+        - Providers
+      parameters:
+        - name: provider_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Circuit breaker state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  state:
+                    type: string
+                    enum: [closed, open, half_open]
+                  failure_count:
+                    type: integer
+                  last_failure:
+                    type: string
+                    format: date-time
+                  next_retry:
+                    type: string
+                    format: date-time
+
+    post:
+      summary: Manually trip or reset circuit breaker
+      description: Admin override for circuit breaker state
+      operationId: controlCircuitBreaker
+      tags:
+        - Providers
+      parameters:
+        - name: provider_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - action
+              properties:
+                action:
+                  type: string
+                  enum: [trip, reset]
+      responses:
+        "200":
+          description: Circuit breaker updated
+
+  # ==================== COST MANAGEMENT ====================
+  
+  /cost/budgets:
+    get:
+      summary: List all budget rules
+      description: Get configured budget limits and alerts
+      operationId: listBudgets
+      tags:
+        - Cost
+      parameters:
+        - name: tenant_id
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Budget configurations
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/BudgetRule"
+
+    post:
+      summary: Create budget rule
+      description: Set spending limits and alert thresholds
+      operationId: createBudget
+      tags:
+        - Cost
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BudgetRule"
+      responses:
+        "201":
+          description: Budget created
+
+  /cost/usage:
+    get:
+      summary: Get cost usage statistics
+      description: Retrieve spending data by tenant, provider, or time period
+      operationId: getCostUsage
+      tags:
+        - Cost
+      parameters:
+        - name: tenant_id
+          in: query
+          schema:
+            type: string
+        - name: period
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [today, this_week, this_month, custom]
+        - name: start_date
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: end_date
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: group_by
+          in: query
+          schema:
+            type: string
+            enum: [provider, decision_type, tenant]
+      responses:
+        "200":
+          description: Usage statistics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total_cost_usd:
+                    type: number
+                  period:
+                    type: string
+                  breakdown:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        category:
+                          type: string
+                        cost_usd:
+                          type: number
+                        decision_count:
+                          type: integer
+
+  # ==================== ANALYTICS ====================
+  
+  /analytics/summary:
+    get:
+      summary: Get decision analytics summary
+      description: High-level metrics and statistics
+      operationId: getAnalyticsSummary
+      tags:
+        - Analytics
+      parameters:
+        - name: start_time
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+        - name: end_time
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+        - name: tenant_id
+          in: query
+          schema:
+            type: string
+        - name: decision_type
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Analytics summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total_decisions:
+                    type: integer
+                  success_rate:
+                    type: number
+                    format: float
+                  avg_latency_ms:
+                    type: number
+                  p50_latency_ms:
+                    type: number
+                  p95_latency_ms:
+                    type: number
+                  p99_latency_ms:
+                    type: number
+                  total_cost_usd:
+                    type: number
+                  avg_cost_usd:
+                    type: number
+                  top_providers:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        provider:
+                          type: string
+                        count:
+                          type: integer
+                        avg_cost:
+                          type: number
+                        success_rate:
+                          type: number
+                  failure_breakdown:
+                    type: object
+                    additionalProperties:
+                      type: integer
+
+  /analytics/trends:
+    get:
+      summary: Get time-series trends
+      description: Decision volume, cost, and latency over time
+      operationId: getTrends
+      tags:
+        - Analytics
+      parameters:
+        - name: start_time
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+        - name: end_time
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+        - name: interval
+          in: query
+          schema:
+            type: string
+            enum: [hour, day, week]
+            default: day
+        - name: metric
+          in: query
+          schema:
+            type: string
+            enum: [volume, cost, latency, success_rate]
+            default: volume
+      responses:
+        "200":
+          description: Trend data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  datapoints:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        timestamp:
+                          type: string
+                          format: date-time
+                        value:
+                          type: number
+
+  # ==================== WEBHOOKS ====================
+  
+  /webhooks:
+    get:
+      summary: List registered webhooks
+      description: Get all webhook configurations
+      operationId: listWebhooks
+      tags:
+        - Webhooks
+      responses:
+        "200":
+          description: Webhook list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Webhook"
+
+    post:
+      summary: Register a webhook
+      description: Create new webhook subscription
+      operationId: createWebhook
+      tags:
+        - Webhooks
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Webhook"
+      responses:
+        "201":
+          description: Webhook created
+
+  /webhooks/{webhook_id}:
+    delete:
+      summary: Delete webhook
+      operationId: deleteWebhook
+      tags:
+        - Webhooks
+      parameters:
+        - name: webhook_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Webhook deleted
+
+  # ==================== SYSTEM ====================
+  
+  /metrics:
+    get:
+      summary: Prometheus-compatible metrics
+      description: System metrics in Prometheus exposition format
+      operationId: getMetrics
+      tags:
+        - System
+      responses:
+        "200":
+          description: Metrics
+          content:
+            text/plain:
+              schema:
+                type: string
+
+components:
+  securitySchemes:
+    InternalApiKey:
+      type: apiKey
+      in: header
+      name: X-Internal-API-Key
+      description: Internal service API key
+
+  schemas:
+    DecisionRecord:
+      type: object
+      required:
+        - decision_id
+        - tenant_id
+        - status
+        - decision_type
+        - intent
+        - constraints
+        - context
+        - created_at
+      properties:
+        decision_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+        status:
+          type: string
+          enum: [pending, executing, success, failure, timeout]
+        decision_type:
+          type: string
+        intent:
+          type: object
+        constraints:
+          type: object
+        context:
+          type: object
+        outcome:
+          type: object
+          properties:
+            result:
+              type: object
+            metadata:
+              type: object
+            warnings:
+              type: array
+        execution_details:
+          type: object
+          properties:
+            total_attempts:
+              type: integer
+            providers_tried:
+              type: array
+              items:
+                type: string
+            fallback_triggered:
+              type: boolean
+            circuit_breaker_state:
+              type: string
+        created_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+        ttl_expires_at:
+          type: string
+          format: date-time
+
+    DecisionTrace:
+      type: object
+      properties:
+        decision_id:
+          type: string
+          format: uuid
+        policy_evaluations:
+          type: array
+          items:
+            type: object
+            properties:
+              policy_id:
+                type: string
+              policy_version:
+                type: integer
+              evaluated_at:
+                type: string
+                format: date-time
+              outcome:
+                type: string
+                enum: [allow, deny, modify]
+              modifications:
+                type: object
+              evaluation_time_ms:
+                type: integer
+        execution_attempts:
+          type: array
+          items:
+            type: object
+            properties:
+              attempt_number:
+                type: integer
+              provider:
+                type: string
+              model:
+                type: string
+              started_at:
+                type: string
+                format: date-time
+              completed_at:
+                type: string
+                format: date-time
+              status:
+                type: string
+                enum: [success, failure, timeout]
+              error:
+                type: object
+              latency_ms:
+                type: integer
+              cost_usd:
+                type: number
+              tokens:
+                type: object
+        routing_decision:
+          type: object
+          properties:
+            strategy:
+              type: string
+              enum: [cost_optimized, latency_optimized, quality_optimized, policy_required]
+            rationale:
+              type: string
+            alternative_paths_considered:
+              type: array
+
+    Policy:
+      type: object
+      required:
+        - policy_id
+        - version
+        - scope
+        - conditions
+        - actions
+      properties:
+        policy_id:
+          type: string
+        version:
+          type: integer
+        priority:
+          type: integer
+        name:
+          type: string
+        description:
+          type: string
+        scope:
+          type: object
+          required:
+            - apply_to
+          properties:
+            apply_to:
+              type: string
+              enum: [all, tenant, decision_type, region]
+            tenant_ids:
+              type: array
+              items:
+                type: string
+            decision_types:
+              type: array
+              items:
+                type: string
+            regions:
+              type: array
+              items:
+                type: string
+        conditions:
+          type: object
+        actions:
+          type: object
+          required:
+            - action_type
+          properties:
+            action_type:
+              type: string
+              enum: [allow, deny, modify, route]
+            deny_reason:
+              type: string
+            modifications:
+              type: object
+            routing_override:
+              type: object
+        active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        created_by:
+          type: string
+
+    PolicyEvaluationResult:
+      type: object
+      properties:
+        applicable_policies:
+          type: array
+          items:
+            type: object
+        final_constraints:
+          type: object
+        denied:
+          type: boolean
+        deny_reason:
+          type: string
+
+    ProviderStatus:
+      type: object
+      properties:
+        provider:
+          type: string
+        status:
+          type: string
+          enum: [healthy, degraded, unavailable]
+        last_checked:
+          type: string
+          format: date-time
+        error_rate:
+          type: number
+        avg_latency_ms:
+          type: number
+        circuit_breaker_state:
+          type: string
+
+    ProviderConfig:
+      type: object
+      properties:
+        provider_id:
+          type: string
+        name:
+          type: string
+        enabled:
+          type: boolean
+        models:
+          type: array
+          items:
+            type: string
+        rate_limits:
+          type: object
+        timeout_ms:
+          type: integer
+
+    ProviderConfigUpdate:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        rate_limits:
+          type: object
+        timeout_ms:
+          type: integer
+
+    BudgetRule:
+      type: object
+      required:
+        - tenant_id
+        - budget_type
+        - limit_usd
+      properties:
+        budget_id:
+          type: string
+        tenant_id:
+          type: string
+        budget_type:
+          type: string
+          enum: [daily, monthly, per_decision]
+        limit_usd:
+          type: number
+        alert_threshold_pct:
+          type: number
+          minimum: 0
+          maximum: 100
+        actions:
+          type: array
+          items:
+            type: string
+            enum: [alert, throttle, block]
+
+    Webhook:
+      type: object
+      required:
+        - url
+        - events
+      properties:
+        webhook_id:
+          type: string
+        url:
+          type: string
+          format: uri
+        events:
+          type: array
+          items:
+            type: string
+            enum:
+              - decision.completed
+              - decision.failed
+              - policy.violated
+              - budget.exceeded
+              - provider.degraded
+        secret:
+          type: string
+        active:
+          type: boolean
+
+tags:
+  - name: Decisions
+    description: Decision record management
+  - name: Policies
+    description: Policy configuration and testing
+  - name: Providers
+    description: Provider management and monitoring
+  - name: Cost
+    description: Cost tracking and budget management
+  - name: Analytics
+    description: Decision analytics and reporting
+  - name: Webhooks
+    description: Webhook subscriptions
+  - name: System
+    description: System administration
